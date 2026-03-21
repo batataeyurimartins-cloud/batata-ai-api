@@ -14,11 +14,25 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "snapshot é obrigatório" });
     }
 
+    const modeText = {
+      summary: "Resuma a página de forma útil e direta.",
+      explain: "Explique o conteúdo de forma simples, como apoio de estudo e entendimento.",
+      important: "Liste os pontos e trechos mais importantes da página."
+    }[mode] || "Analise a página.";
+
     const prompt = `
 Responda em português do Brasil.
 
-Modo: ${mode || "summary"}
-Instrução: ${instruction || "nenhuma"}
+Você é um assistente para estudo, produtividade e entendimento de páginas.
+Use apenas o conteúdo enviado.
+Diga as respostas da página
+Se a página tiver perguntas, Diga todas as respostas.
+
+Tarefa principal:
+${modeText}
+
+Instrução extra:
+${instruction || "nenhuma"}
 
 Conteúdo da página:
 ${JSON.stringify(snapshot, null, 2)}
@@ -33,11 +47,7 @@ ${JSON.stringify(snapshot, null, 2)}
           "x-goog-api-key": process.env.GEMINI_API_KEY
         },
         body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: prompt }]
-            }
-          ]
+          contents: [{ parts: [{ text: prompt }] }]
         })
       }
     );
@@ -51,10 +61,9 @@ ${JSON.stringify(snapshot, null, 2)}
     }
 
     return res.status(200).json({
-      answer:
-        data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sem resposta"
+      answer: data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sem resposta"
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message || "Erro interno" });
   }
 }
