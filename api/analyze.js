@@ -15,8 +15,8 @@ export default async function handler(req, res) {
     }
 
     const modeText = {
-      summary: "Resuma a página de forma útil e direta.",
-      explain: "Explique o conteúdo de forma simples, como apoio de estudo e entendimento.",
+      summary: "Diga Todas as respostas da página, apenas as respostas, nada mais..",
+      explain: "Faça uma redação de acordo com TUDO que tem na página.",
       important: "Liste os pontos e trechos mais importantes da página."
     }[mode] || "Analise a página.";
 
