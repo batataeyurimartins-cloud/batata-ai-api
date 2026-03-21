@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     }
 
     const modeText = {
-      summary: "Diga Todas as respostas da página, apenas as respostas, nada mais..",
+      summary: "Diga Todas as respostas da página, apenas as respostas, nada mais, e caso não houver alternativa diga apenas a possivel resposta",
       explain: "Faça uma redação de acordo com TUDO que tem na página.",
       important: "Liste os pontos e trechos mais importantes da página."
     }[mode] || "Analise a página.";
