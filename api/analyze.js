@@ -7,62 +7,75 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  try {
-    const { snapshot, mode, instruction } = req.body || {};
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método não permitido" });
+  }
 
-    if (!snapshot) {
-      return res.status(400).json({ error: "snapshot é obrigatório" });
+  try {
+    const { snapshot, mode, instruction, question, history } = req.body || {};
+
+    if (!snapshot || !snapshot.text) {
+      return res.status(400).json({ error: "snapshot com texto é obrigatório" });
     }
 
-    const modeText = {
-      summary: "Diga Todas as respostas da página, apenas as respostas, nada mais, e caso não houver alternativa diga apenas a possivel resposta",
-      explain: "Faça uma redação de acordo com TUDO que tem na página.",
-      important: "Liste os pontos e trechos mais importantes da página."
-    }[mode] || "Analise a página.";
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(500).json({ error: "GROQ_API_KEY não configurada no servidor" });
+    }
 
-    const prompt = `
-Responda em português do Brasil.
+    const modeTextMap = {
+      smart: `Detecte automaticamente o melhor tipo de resposta para esta página.
+- Se houver perguntas ou exercícios, responda objetivamente.
+- Se for artigo ou texto explicativo, resuma.
+- Se for conteúdo técnico, explique de forma clara.
+- Se houver texto selecionado, foque primeiro nele.`,
+      summary: "Diga as respostas da página de forma direta. Se houver perguntas, responda cada uma claramente.",
+      explain: "Explique o conteúdo da página em português do Brasil, de forma organizada e clara.",
+      important: "Liste os pontos, trechos, ideias e informações mais importantes da página.",
+      chat: "Responda à pergunta do usuário usando somente o conteúdo enviado da página e o histórico recente."
+    };
 
-Você é um assistente para estudo, produtividade e entendimento de páginas.
-Use apenas o conteúdo enviado.
-Diga as respostas da página
-Se a página tiver perguntas, Diga todas as respostas.
+    const baseInstruction = modeTextMap[mode] || modeTextMap.smart;
+    const safeHistory = Array.isArray(history) ? history.slice(-8) : [];
 
-Tarefa principal:
-${modeText}
+    const systemPrompt = [
+      "Responda sempre em português do Brasil.",
+      "Você é o Batata AI Hub, um assistente que analisa páginas.",
+      "Use somente o conteúdo enviado.",
+      "Não invente fatos que não estiverem na página.",
+      "Quando não encontrar a resposta na página, diga claramente que a informação não apareceu no conteúdo enviado."
+    ].join("\n");
 
-Instrução extra:
-${instruction || "nenhuma"}
+    const userPrompt = `Tarefa principal:\n${baseInstruction}\n\nInstrução extra do usuário:\n${instruction || "nenhuma"}\n\nPergunta atual do usuário:\n${question || "nenhuma"}\n\nHistórico recente:\n${safeHistory.map((m, i) => `${i + 1}. ${m.role}: ${m.content}`).join("\n") || "nenhum"}\n\nDados da página:\n${JSON.stringify(snapshot, null, 2)}`;
 
-Conteúdo da página:
-${JSON.stringify(snapshot, null, 2)}
-`;
+    const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.4,
+        max_completion_tokens: 1200,
+        top_p: 0.9,
+        stream: false
+      })
+    });
 
-    const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": process.env.GEMINI_API_KEY
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }]
-        })
-      }
-    );
+    const data = await groqResponse.json().catch(() => ({}));
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(500).json({
-        error: data?.error?.message || "Erro na Gemini API"
+    if (!groqResponse.ok) {
+      return res.status(groqResponse.status).json({
+        error: data?.error?.message || data?.message || "Erro na Groq API"
       });
     }
 
-    return res.status(200).json({
-      answer: data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sem resposta"
-    });
+    const answer = data?.choices?.[0]?.message?.content || "Sem resposta";
+    return res.status(200).json({ answer });
   } catch (err) {
     return res.status(500).json({ error: err.message || "Erro interno" });
   }
