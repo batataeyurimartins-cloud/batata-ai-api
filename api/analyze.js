@@ -8,69 +8,90 @@ export default async function handler(req, res) {
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Use POST." });
+    return res.status(405).json({ error: "Método não permitido" });
   }
 
   try {
-    const { snapshot, mode = "answers", instruction = "", question = "", messages = [] } = req.body || {};
+    const { snapshot, mode = "smart", instruction = "", question = "", history = [] } = req.body || {};
 
-    if (!snapshot || !snapshot.text) {
-      return res.status(400).json({ error: "snapshot.text é obrigatório." });
+    if (!snapshot || typeof snapshot.text !== "string" || !snapshot.text.trim()) {
+      return res.status(400).json({ error: "snapshot com texto é obrigatório" });
     }
 
-    const modeMap = {
-      answers: "Se houver questões com alternativas, escolha a alternativa correta e explique em no máximo 1 linha por item. Se houver várias, numere.",
-      summary: "Faça um resumo curto, claro e útil do conteúdo principal da página.",
-      simple: "Explique o conteúdo de forma simples, direta e fácil de entender.",
-      insights: "Liste os pontos mais importantes, dicas, pegadinhas ou aprendizados principais do conteúdo."
-    };
-
-    const safeHistory = Array.isArray(messages)
-      ? messages
-          .filter((m) => m && typeof m.content === "string" && typeof m.role === "string")
+    const safeHistory = Array.isArray(history)
+      ? history
           .slice(-8)
-          .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content.slice(0, 1800) }))
+          .map((item) => ({
+            role: item?.role === "assistant" ? "assistant" : "user",
+            content: String(item?.content || "").slice(0, 1000)
+          }))
       : [];
 
-    const systemPrompt = [
-      "Responda em português do Brasil.",
-      "Você é um assistente útil para leitura, estudo e produtividade.",
-      "Use principalmente o conteúdo visível enviado no snapshot.",
-      "Quando o usuário pedir respostas de questões, você pode inferir a alternativa correta com base no conteúdo visível e no conhecimento geral do modelo.",
-      "Se a página tiver múltiplas questões, organize por número.",
-      "Se não houver informação suficiente, diga isso com clareza em uma frase curta."
-    ].join(" ");
+    const modeInstructions = {
+      smart: `Analise o conteúdo da página e escolha a melhor forma de responder.
+- Se houver perguntas, alternativas ou exercícios, responda de forma direta.
+- Se for conteúdo explicativo, resuma ou explique.
+- Se houver texto selecionado, dê prioridade total a ele.`,
+      answers: `Se houver perguntas, exercícios ou alternativas, responda de forma direta e objetiva.
+- Quando houver alternativas, diga a melhor opção e explique rapidamente.
+- Quando não houver informação suficiente no conteúdo, diga isso com clareza.`,
+      summary: `Faça um resumo útil e curto do conteúdo da página em português do Brasil.`,
+      explain: `Explique o conteúdo da página de forma simples, clara e organizada.`,
+      important: `Liste os pontos, ideias e trechos mais importantes do conteúdo enviado.`,
+      chat: `Responda à pergunta do usuário usando primeiro o conteúdo da página.
+- Você pode complementar com conhecimento geral quando isso ajudar a explicar ou inferir a melhor resposta.
+- Quando a resposta depender de algo que não aparece no conteúdo da página, deixe isso claro.`
+    };
 
-    const userPrompt = [
-      `Modo: ${mode}`,
-      `Objetivo do modo: ${modeMap[mode] || modeMap.answers}`,
-      instruction ? `Instrução extra do usuário: ${instruction}` : "",
-      question ? `Pergunta do usuário sobre a página: ${question}` : "",
-      "Dados da página:",
-      JSON.stringify({
-        title: snapshot.title || "",
-        url: snapshot.url || "",
-        headings: snapshot.headings || [],
-        selection: snapshot.selection || "",
-        text: snapshot.text || ""
-      })
-    ].filter(Boolean).join("\n\n");
+    const systemPrompt = `
+Você é o Batata AI Hub, um assistente em português do Brasil.
+Seja claro, útil e direto.
+Evite enrolação.
+Quando o conteúdo da página trouxer a resposta, priorize esse conteúdo.
+Quando a resposta não estiver explícita na página, você pode inferir com cuidado ou usar conhecimento geral, mas deve deixar isso claro.
+Nunca invente detalhes específicos como datas, nomes ou números se eles não aparecerem no conteúdo.
+`;
+
+    const pageSnapshot = {
+      title: snapshot.title || "",
+      url: snapshot.url || "",
+      text: String(snapshot.text || "").slice(0, 9000),
+      selectedText: String(snapshot.selectedText || "").slice(0, 4500),
+      headings: Array.isArray(snapshot.headings) ? snapshot.headings.slice(0, 20) : [],
+      capturedAt: snapshot.capturedAt || ""
+    };
+
+    const userPrompt = `
+Tarefa principal:
+${modeInstructions[mode] || modeInstructions.smart}
+
+Instrução extra do usuário:
+${instruction || "nenhuma"}
+
+Pergunta atual do usuário:
+${question || "nenhuma"}
+
+Conteúdo da página:
+${JSON.stringify(pageSnapshot, null, 2)}
+`;
+
+    const messages = [
+      { role: "system", content: systemPrompt.trim() },
+      ...safeHistory.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: userPrompt.trim() }
+    ];
 
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`
       },
       body: JSON.stringify({
         model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
-        temperature: 0.3,
-        max_tokens: 900,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...safeHistory,
-          { role: "user", content: userPrompt }
-        ]
+        messages,
+        temperature: 0.5,
+        max_tokens: 1000
       })
     });
 
@@ -78,15 +99,13 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: data?.error?.message || "Erro ao consultar a API da Groq."
+        error: data?.error?.message || "Erro na API da Groq"
       });
     }
 
-    return res.status(200).json({
-      answer: data?.choices?.[0]?.message?.content || "Sem resposta.",
-      model: data?.model || process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
-    });
-  } catch (err) {
-    return res.status(500).json({ error: err?.message || "Erro interno." });
+    const answer = data?.choices?.[0]?.message?.content?.trim() || "Sem resposta";
+    return res.status(200).json({ answer });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Erro interno" });
   }
 }
