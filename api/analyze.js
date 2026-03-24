@@ -7,52 +7,34 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Método não permitido" });
-  }
-
   try {
-    const { snapshot, mode, instruction, question, history } = req.body || {};
+    const { snapshot, mode, instruction } = req.body || {};
 
-    if (!snapshot || !snapshot.text) {
-      return res.status(400).json({ error: "snapshot com texto é obrigatório" });
+    if (!snapshot) {
+      return res.status(400).json({ error: "snapshot é obrigatório" });
     }
 
-    const modeTextMap = {
-      smart: `Detecte automaticamente o melhor tipo de resposta para esta página.
-- Se houver perguntas/exercícios, responda objetivamente.
-- Se for artigo ou texto explicativo, resuma.
-- Se for conteúdo técnico, explique de forma clara.
-- Se houver texto selecionado, foque primeiro nele.`,
-      summary: "Diga as respostas da página de forma direta. Se houver perguntas, responda cada uma claramente.",
-      explain: "Explique o conteúdo da página em português do Brasil, de forma organizada e clara.",
-      important: "Liste os pontos, trechos, ideias e informações mais importantes da página.",
-      chat: "Responda à pergunta do usuário usando somente o conteúdo enviado da página e o histórico recente.",
-    };
-
-    const baseInstruction = modeTextMap[mode] || modeTextMap.smart;
-    const safeHistory = Array.isArray(history) ? history.slice(-8) : [];
+    const modeText = {
+      summary: "Diga Todas as respostas da página, apenas as respostas, nada mais..",
+      explain: "Faça uma redação de acordo com TUDO que tem na página.",
+      important: "Liste os pontos e trechos mais importantes da página."
+    }[mode] || "Analise a página.";
 
     const prompt = `
-Responda sempre em português do Brasil.
-Você é o Batata AI Hub, um assistente que analisa páginas.
-Use somente o conteúdo enviado.
-Não invente fatos que não estiverem na página.
-Quando não encontrar a resposta na página, diga claramente que a informação não apareceu no conteúdo enviado.
+Responda em português do Brasil.
+
+Você é um assistente para estudo, produtividade e entendimento de páginas.
+Use apenas o conteúdo enviado.
+Diga as respostas da página
+Se a página tiver perguntas, Diga todas as respostas.
 
 Tarefa principal:
-${baseInstruction}
+${modeText}
 
-Instrução extra do usuário:
+Instrução extra:
 ${instruction || "nenhuma"}
 
-Pergunta atual do usuário:
-${question || "nenhuma"}
-
-Histórico recente:
-${safeHistory.map((m, i) => `${i + 1}. ${m.role}: ${m.content}`).join("\n") || "nenhum"}
-
-Dados da página:
+Conteúdo da página:
 ${JSON.stringify(snapshot, null, 2)}
 `;
 
@@ -65,12 +47,7 @@ ${JSON.stringify(snapshot, null, 2)}
           "x-goog-api-key": process.env.GEMINI_API_KEY
         },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.6,
-            topP: 0.9,
-            maxOutputTokens: 1200
-          }
+          contents: [{ parts: [{ text: prompt }] }]
         })
       }
     );
@@ -83,8 +60,9 @@ ${JSON.stringify(snapshot, null, 2)}
       });
     }
 
-    const answer = data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sem resposta";
-    return res.status(200).json({ answer });
+    return res.status(200).json({
+      answer: data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sem resposta"
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message || "Erro interno" });
   }
