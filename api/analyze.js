@@ -12,58 +12,36 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { snapshot, mode = "smart", instruction = "", question = "", history = [] } = req.body || {};
+    const { snapshot, mode, instruction, question, history } = req.body || {};
 
-    if (!snapshot || typeof snapshot.text !== "string" || !snapshot.text.trim()) {
+    if (!snapshot || !snapshot.text) {
       return res.status(400).json({ error: "snapshot com texto é obrigatório" });
     }
 
-    const safeHistory = Array.isArray(history)
-      ? history
-          .slice(-8)
-          .map((item) => ({
-            role: item?.role === "assistant" ? "assistant" : "user",
-            content: String(item?.content || "").slice(0, 1000)
-          }))
-      : [];
-
-    const modeInstructions = {
-      smart: `Analise o conteúdo da página e escolha a melhor forma de responder.
-- Se houver perguntas, alternativas ou exercícios, responda de forma direta.
-- Se for conteúdo explicativo, resuma ou explique.
-- Se houver texto selecionado, dê prioridade total a ele.`,
-      answers: `Se houver perguntas, exercícios ou alternativas, responda de forma direta e objetiva.
-- Quando houver alternativas, diga a melhor opção e explique rapidamente.
-- Quando não houver informação suficiente no conteúdo, diga isso com clareza.`,
-      summary: `Faça um resumo útil e curto do conteúdo da página em português do Brasil.`,
-      explain: `Explique o conteúdo da página de forma simples, clara e organizada.`,
-      important: `Liste os pontos, ideias e trechos mais importantes do conteúdo enviado.`,
-      chat: `Responda à pergunta do usuário usando primeiro o conteúdo da página.
-- Você pode complementar com conhecimento geral quando isso ajudar a explicar ou inferir a melhor resposta.
-- Quando a resposta depender de algo que não aparece no conteúdo da página, deixe isso claro.`
+    const modeTextMap = {
+      smart: `Detecte automaticamente o melhor tipo de resposta para esta página.
+- Se houver perguntas/exercícios, responda objetivamente.
+- Se for artigo ou texto explicativo, resuma.
+- Se for conteúdo técnico, explique de forma clara.
+- Se houver texto selecionado, foque primeiro nele.`,
+      summary: "Diga as respostas da página de forma direta. Se houver perguntas, responda cada uma claramente.",
+      explain: "Explique o conteúdo da página em português do Brasil, de forma organizada e clara.",
+      important: "Liste os pontos, trechos, ideias e informações mais importantes da página.",
+      chat: "Responda à pergunta do usuário usando somente o conteúdo enviado da página e o histórico recente.",
     };
 
-    const systemPrompt = `
-Você é o Batata AI Hub, um assistente em português do Brasil.
-Seja claro, útil e direto.
-Evite enrolação.
-Quando o conteúdo da página trouxer a resposta, priorize esse conteúdo.
-Quando a resposta não estiver explícita na página, você pode inferir com cuidado ou usar conhecimento geral, mas deve deixar isso claro.
-Nunca invente detalhes específicos como datas, nomes ou números se eles não aparecerem no conteúdo.
-`;
+    const baseInstruction = modeTextMap[mode] || modeTextMap.smart;
+    const safeHistory = Array.isArray(history) ? history.slice(-8) : [];
 
-    const pageSnapshot = {
-      title: snapshot.title || "",
-      url: snapshot.url || "",
-      text: String(snapshot.text || "").slice(0, 9000),
-      selectedText: String(snapshot.selectedText || "").slice(0, 4500),
-      headings: Array.isArray(snapshot.headings) ? snapshot.headings.slice(0, 20) : [],
-      capturedAt: snapshot.capturedAt || ""
-    };
+    const prompt = `
+Responda sempre em português do Brasil.
+Você é o Batata AI Hub, um assistente que analisa páginas.
+Use somente o conteúdo enviado.
+Não invente fatos que não estiverem na página.
+Quando não encontrar a resposta na página, diga claramente que a informação não apareceu no conteúdo enviado.
 
-    const userPrompt = `
 Tarefa principal:
-${modeInstructions[mode] || modeInstructions.smart}
+${baseInstruction}
 
 Instrução extra do usuário:
 ${instruction || "nenhuma"}
@@ -71,41 +49,43 @@ ${instruction || "nenhuma"}
 Pergunta atual do usuário:
 ${question || "nenhuma"}
 
-Conteúdo da página:
-${JSON.stringify(pageSnapshot, null, 2)}
+Histórico recente:
+${safeHistory.map((m, i) => `${i + 1}. ${m.role}: ${m.content}`).join("\n") || "nenhum"}
+
+Dados da página:
+${JSON.stringify(snapshot, null, 2)}
 `;
 
-    const messages = [
-      { role: "system", content: systemPrompt.trim() },
-      ...safeHistory.map((m) => ({ role: m.role, content: m.content })),
-      { role: "user", content: userPrompt.trim() }
-    ];
-
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
-        messages,
-        temperature: 0.5,
-        max_tokens: 1000
-      })
-    });
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": process.env.GEMINI_API_KEY
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.6,
+            topP: 0.9,
+            maxOutputTokens: 1200
+          }
+        })
+      }
+    );
 
     const data = await response.json();
 
     if (!response.ok) {
-      return res.status(response.status).json({
-        error: data?.error?.message || "Erro na API da Groq"
+      return res.status(500).json({
+        error: data?.error?.message || "Erro na Gemini API"
       });
     }
 
-    const answer = data?.choices?.[0]?.message?.content?.trim() || "Sem resposta";
+    const answer = data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sem resposta";
     return res.status(200).json({ answer });
-  } catch (error) {
-    return res.status(500).json({ error: error.message || "Erro interno" });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || "Erro interno" });
   }
 }
